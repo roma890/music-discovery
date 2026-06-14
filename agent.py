@@ -41,23 +41,17 @@ def get_spotify():
             and client_id not in placeholders and client_secret not in placeholders):
         return None
 
-    redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback")
     try:
         _spotify_client = spotipy.Spotify(
-            auth_manager=SpotifyOAuth(
+            auth_manager=SpotifyClientCredentials(
                 client_id=client_id,
                 client_secret=client_secret,
-                redirect_uri=redirect_uri,
-                scope="playlist-modify-public playlist-modify-private",
             )
         )
-        _spotify_client.current_user()
+        _spotify_client.search(q="test", type="track", limit=1)
     except Exception:
-        _spotify_client = spotipy.Spotify(
-            auth_manager=SpotifyClientCredentials(
-                client_id=client_id, client_secret=client_secret
-            )
-        )
+        _spotify_client = None
+
     return _spotify_client
 
 
@@ -189,6 +183,10 @@ def _run_spotify_tool(name: str, params: dict, sp) -> dict:
     return {"error": f"unknown tool: {name}"}
 
 
+# Tools subset for Client Credentials mode (no user auth = no playlist creation)
+SPOTIFY_SEARCH_TOOLS = [t for t in SPOTIFY_TOOLS if t["name"] != "create_playlist"]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -205,6 +203,100 @@ def _extract_json(text: str):
 # ---------------------------------------------------------------------------
 # Public API — used by both CLI and web app
 # ---------------------------------------------------------------------------
+def discover_playlist_spotify(vibe: str, sp):
+    """Agentic Spotify mode — generator that yields SSE-compatible dicts."""
+    system = textwrap.dedent("""
+        You are an expert music curator combining deep cultural knowledge with live Spotify data.
+
+        Follow this exact four-phase workflow:
+
+        PHASE 1 — CULTURAL FRAMING (no tools yet)
+        Before searching anything, analyze the vibe culturally:
+        - Name the emotion precisely. Does it have a word in any language? (saudade, mono no aware, hygge, etc.)
+        - Identify musical traditions and genres that embody this feeling.
+        - Name 3-5 reference artists or albums that culturally define this space.
+        - Define what to avoid — genres or qualities that would feel wrong.
+        - Set target audio ranges: energy (0-1), tempo (BPM), valence (0-1).
+
+        PHASE 2 — SEARCH WITH CULTURAL PRECISION
+        Call search_spotify 3 times using your cultural anchors as queries, not just descriptive words.
+        Good: "fado saudade Amalia Rodrigues", "Nick Drake similar folk melancholy 1970s"
+        Bad: "sad slow music rainy"
+        Then call get_recommendations using the genre seeds and audio targets from Phase 1.
+
+        PHASE 3 — FILTER WITH AUDIO FEATURES
+        Call get_audio_features on 12-18 candidates. Eliminate tracks that fall outside your target
+        ranges. Do not override the numbers with gut feel at this stage — let the metrics cut first.
+
+        PHASE 4 — CURATE WITH TASTE
+        From what survives Phase 3, make final picks using cultural judgment:
+        - Prioritize tracks with cultural weight over tracks that merely fit the numbers.
+        - Include at least 2 tracks from the last 4 years.
+        - Mix well-known anchors with deeper cuts.
+
+        Return ONLY a JSON object (no other text):
+        {
+          "playlist_name": "short evocative title",
+          "vibe_summary": "one sentence capturing the musical essence",
+          "mood": ["adjectives"],
+          "energy": <0.0-1.0>,
+          "genres": ["genre list"],
+          "tracks": [
+            {
+              "title": "Song Title",
+              "artist": "Artist Name",
+              "album": "Album Name",
+              "year": 2003,
+              "explanation": "2-3 sentences on WHY this fits — reference both cultural context and the audio features you verified"
+            }
+          ]
+        }
+    """).strip()
+
+    messages = [{"role": "user", "content": f'Discover music for this vibe: "{vibe}"'}]
+
+    while True:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=8000,
+            system=system,
+            tools=SPOTIFY_SEARCH_TOOLS,
+            messages=messages,
+        )
+
+        if response.stop_reason == "end_turn":
+            text = "".join(b.text for b in response.content if hasattr(b, "text"))
+            result = _extract_json(text)
+            yield {
+                "type": "done",
+                "playlist_name": result.get("playlist_name", "Your Playlist"),
+                "vibe_summary": result.get("vibe_summary", ""),
+                "genres": result.get("genres", []),
+                "mood": result.get("mood", []),
+                "tracks": result.get("tracks", []),
+            }
+            break
+
+        if response.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    yield {"type": "tool_call", "tool": block.name, "input": block.input}
+                    try:
+                        result = _run_spotify_tool(block.name, block.input, sp)
+                    except Exception as exc:
+                        result = {"error": str(exc)}
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result),
+                    })
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            break
+
+
 def discover_playlist(vibe: str) -> dict:
     """Single call: analyze vibe + recommend 10 songs. Returns full playlist dict."""
     r = client.messages.create(

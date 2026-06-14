@@ -2,7 +2,7 @@
 
 import json
 from flask import Flask, render_template, request, Response, stream_with_context
-from agent import discover_playlist
+from agent import discover_playlist, discover_playlist_spotify, get_spotify
 
 app = Flask(__name__)
 
@@ -20,16 +20,22 @@ def discover():
 
     def generate():
         try:
-            yield _event({"type": "status", "msg": "Discovering your playlist..."})
-            result = discover_playlist(vibe)
-            yield _event({
-                "type": "done",
-                "playlist_name": result.get("playlist_name", "Your Playlist"),
-                "vibe_summary": result.get("vibe_summary", ""),
-                "genres": result.get("genres", []),
-                "mood": result.get("mood", []),
-                "tracks": result.get("tracks", []),
-            })
+            sp = get_spotify()
+            if sp:
+                yield _event({"type": "status", "msg": "Analyzing cultural context..."})
+                for event in discover_playlist_spotify(vibe, sp):
+                    yield _event(event)
+            else:
+                yield _event({"type": "status", "msg": "Discovering your playlist..."})
+                result = discover_playlist(vibe)
+                yield _event({
+                    "type": "done",
+                    "playlist_name": result.get("playlist_name", "Your Playlist"),
+                    "vibe_summary": result.get("vibe_summary", ""),
+                    "genres": result.get("genres", []),
+                    "mood": result.get("mood", []),
+                    "tracks": result.get("tracks", []),
+                })
         except Exception as exc:
             yield _event({"type": "error", "msg": str(exc)})
 

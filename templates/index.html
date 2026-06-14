@@ -220,40 +220,37 @@
       50%       { height: 44px; opacity: 1; }
     }
 
-    .steps {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .step {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 0.78rem;
+    .status-text {
+      font-size: 0.82rem;
       font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .agent-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      width: 100%;
+      max-width: 380px;
+      margin-top: 2px;
+    }
+
+    .agent-step {
+      font-size: 0.74rem;
       color: var(--text-dim);
-      transition: color 0.3s;
+      padding-left: 12px;
+      border-left: 1px solid var(--border);
+      line-height: 1.5;
+      opacity: 0;
+      animation: stepIn 0.25s ease forwards;
     }
 
-    .step.active { color: var(--accent-light); }
-    .step.done   { color: var(--text-muted); }
+    .agent-step.current { color: var(--accent-light); border-left-color: var(--accent); }
 
-    .step-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: var(--text-dim);
-      transition: background 0.3s, box-shadow 0.3s;
-      flex-shrink: 0;
+    @keyframes stepIn {
+      from { opacity: 0; transform: translateX(-4px); }
+      to   { opacity: 1; transform: translateX(0); }
     }
-
-    .step.active .step-dot {
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent-glow);
-    }
-
-    .step.done .step-dot { background: var(--text-muted); }
-    .step-line { width: 36px; height: 1px; background: var(--border); }
 
     /* ── Results ── */
     #results {
@@ -525,9 +522,8 @@
       <div class="wv"></div><div class="wv"></div><div class="wv"></div>
       <div class="wv"></div>
     </div>
-    <div class="steps">
-      <div class="step active" id="step-1"><div class="step-dot"></div><span id="step-label">Discovering your playlist...</span></div>
-    </div>
+    <div id="status-text" class="status-text">Discovering your playlist...</div>
+    <div id="agent-steps" class="agent-steps"></div>
   </div>
 
   <div class="error-box" id="error-box"></div>
@@ -545,14 +541,15 @@
   </div>
 
   <script>
-    const btn      = document.getElementById('discover-btn');
-    const input    = document.getElementById('vibe-input');
-    const loading  = document.getElementById('loading');
-    const results  = document.getElementById('results');
-    const errorBox = document.getElementById('error-box');
-    const stepLabel = document.getElementById('step-label');
-    const copyBtn   = document.getElementById('copy-btn');
-    const bgGrid   = document.getElementById('bg-grid');
+    const btn        = document.getElementById('discover-btn');
+    const input      = document.getElementById('vibe-input');
+    const loading    = document.getElementById('loading');
+    const results    = document.getElementById('results');
+    const errorBox   = document.getElementById('error-box');
+    const statusText = document.getElementById('status-text');
+    const agentSteps = document.getElementById('agent-steps');
+    const copyBtn    = document.getElementById('copy-btn');
+    const bgGrid     = document.getElementById('bg-grid');
 
     let lastTracks   = [];
     let submittedVibe = '';
@@ -581,6 +578,8 @@
       results.style.display = 'none';
       errorBox.style.display = 'none';
       loading.style.display  = 'flex';
+      agentSteps.innerHTML   = '';
+      statusText.textContent = 'Discovering your playlist...';
 
       try {
         const res = await fetch('/discover', {
@@ -611,9 +610,34 @@
       }
     }
 
+    const TOOL_LABELS = {
+      search_spotify:      q  => `Searching Spotify: "${q}"`,
+      get_recommendations: g  => `Getting recommendations — ${g}`,
+      get_audio_features:  n  => `Analyzing audio features for ${n} track${n !== 1 ? 's' : ''}`,
+    };
+
+    function addAgentStep(tool, input) {
+      agentSteps.querySelectorAll('.agent-step').forEach(el => el.classList.remove('current'));
+      const el = document.createElement('div');
+      el.className = 'agent-step current';
+      if (tool === 'search_spotify')
+        el.textContent = TOOL_LABELS.search_spotify(input?.query || '…');
+      else if (tool === 'get_recommendations')
+        el.textContent = TOOL_LABELS.get_recommendations((input?.seed_genres || []).slice(0,3).join(', ') || '…');
+      else if (tool === 'get_audio_features')
+        el.textContent = TOOL_LABELS.get_audio_features((input?.track_ids || []).length);
+      else
+        el.textContent = tool;
+      agentSteps.appendChild(el);
+    }
+
     function handleEvent(data) {
       if (data.type === 'status') {
-        stepLabel.textContent = data.msg;
+        statusText.textContent = data.msg;
+      }
+
+      if (data.type === 'tool_call') {
+        addAgentStep(data.tool, data.input);
       }
 
       if (data.type === 'done') {
@@ -665,6 +689,14 @@
           </button>`;
         list.appendChild(el);
       });
+
+      // Guarantee every button is visible within 12s even if iTunes never responds
+      setTimeout(() => {
+        document.querySelectorAll('.play-btn:not(.ready)').forEach(b => {
+          b.classList.add('ready', 'no-preview');
+          b.title = 'No preview available';
+        });
+      }, 12000);
     }
 
     // ── Audio playback ──
@@ -676,9 +708,8 @@
       if (!url) return;
 
       if (currentBtn === btn) {
-        // Same track — toggle pause/resume
         if (currentAudio.paused) {
-          currentAudio.play();
+          currentAudio.play().catch(() => markBroken(btn));
           btn.classList.add('playing');
         } else {
           currentAudio.pause();
@@ -687,7 +718,6 @@
         return;
       }
 
-      // Stop whatever was playing
       if (currentAudio) {
         currentAudio.pause();
         if (currentBtn) currentBtn.classList.remove('playing');
@@ -696,7 +726,7 @@
       currentAudio = new Audio(url);
       currentBtn   = btn;
       btn.classList.add('playing');
-      currentAudio.play();
+      currentAudio.play().catch(() => markBroken(btn));
       currentAudio.addEventListener('ended', () => {
         btn.classList.remove('playing');
         currentAudio = null;
@@ -704,30 +734,63 @@
       });
     }
 
+    function markBroken(btn) {
+      btn.classList.remove('playing');
+      btn.classList.add('no-preview');
+      btn.title = 'Preview unavailable';
+      delete btn.dataset.preview;
+      currentAudio = null;
+      currentBtn   = null;
+    }
+
     async function fetchItunesTrack(title, artist) {
-      // Try progressively looser queries until we get a preview URL
+      // Strip "feat.", "ft.", "&" etc. so "JAY-Z feat. Alicia Keys" → "JAY-Z"
+      const cleanArtist = artist.split(/\s*(?:feat\.?|ft\.?|featuring|&|,)\s*/i)[0].trim();
+
       const queries = [
+        `${cleanArtist} ${title}`,
         `${artist} ${title}`,
-        `${title} ${artist}`,
+        `${title} ${cleanArtist}`,
         title,
       ];
+
+      const titleLower  = title.toLowerCase();
+      const artistLower = cleanArtist.toLowerCase();
+
       for (const q of queries) {
         try {
           const res = await fetch(
-            `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=5&media=music`
+            `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=10&media=music`
           );
           const d = await res.json();
           if (!d.results?.length) continue;
-          // Prefer exact title match, then fall back to first result
-          const match =
-            d.results.find(r => r.trackName?.toLowerCase() === title.toLowerCase()) ||
-            d.results[0];
-          if (match) {
-            return {
-              artUrl:     match.artworkUrl100?.replace('100x100bb', '400x400bb') ?? null,
-              previewUrl: match.previewUrl ?? null,
-            };
-          }
+
+          // Priority 1: exact title + artist
+          const exact = d.results.find(r =>
+            r.trackName?.toLowerCase() === titleLower &&
+            r.artistName?.toLowerCase().includes(artistLower)
+          );
+          if (exact) return {
+            artUrl:     exact.artworkUrl100?.replace('100x100bb', '400x400bb') ?? null,
+            previewUrl: exact.previewUrl ?? null,
+          };
+
+          // Priority 2: exact title (any artist), prefer one with preview
+          const byTitle = d.results
+            .filter(r => r.trackName?.toLowerCase() === titleLower)
+            .sort((a, b) => (b.previewUrl ? 1 : 0) - (a.previewUrl ? 1 : 0))[0];
+          if (byTitle) return {
+            artUrl:     byTitle.artworkUrl100?.replace('100x100bb', '400x400bb') ?? null,
+            previewUrl: byTitle.previewUrl ?? null,
+          };
+
+          // Priority 3: no title match — take art from first result but NO preview
+          // (avoids playing completely wrong tracks that partially match keywords)
+          const first = d.results[0];
+          if (first) return {
+            artUrl:     first.artworkUrl100?.replace('100x100bb', '400x400bb') ?? null,
+            previewUrl: null,
+          };
         } catch {}
       }
       return { artUrl: null, previewUrl: null };
@@ -736,11 +799,14 @@
     async function loadItunesData(tracks) {
       const cards = document.querySelectorAll('.track');
 
-      // Fetch all tracks in parallel
-      const results = await Promise.all(tracks.map(t => fetchItunesTrack(t.title, t.artist)));
+      // Each fetch is isolated — one failure never blocks the others
+      const itunesData = await Promise.all(
+        tracks.map(t =>
+          fetchItunesTrack(t.title, t.artist).catch(() => ({ artUrl: null, previewUrl: null }))
+        )
+      );
 
-      // Wire up play buttons
-      results.forEach((r, i) => {
+      itunesData.forEach((r, i) => {
         if (!cards[i]) return;
         const btn = cards[i].querySelector('.play-btn');
         btn.classList.add('ready');
@@ -753,8 +819,7 @@
         }
       });
 
-      // Build background art grid
-      const artUrls = results.map(r => r.artUrl).filter(Boolean);
+      const artUrls = itunesData.map(r => r.artUrl).filter(Boolean);
       if (!artUrls.length) return;
       bgGrid.innerHTML = '';
       for (let i = 0; i < 30; i++) {
