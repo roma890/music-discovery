@@ -1,0 +1,4 @@
+anthropic
+flask
+spotipy
+python-dotenv
