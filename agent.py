@@ -20,7 +20,7 @@ MODEL = "claude-opus-4-8"
 # ---------------------------------------------------------------------------
 try:
     import spotipy
-    from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
+    from spotipy.oauth2 import SpotifyClientCredentials
 
     SPOTIFY_AVAILABLE = True
 except ImportError:
@@ -337,6 +337,26 @@ def discover_playlist(vibe: str) -> dict:
     )
     text = "".join(b.text for b in r.content if hasattr(b, "text"))
     return _extract_json(text)
+
+
+def save_to_spotify(sp_user, tracks: list, playlist_name: str, description: str = "") -> str:
+    """Create a Spotify playlist from a track list. Returns the playlist URL."""
+    user_id = sp_user.current_user()["id"]
+    pl = sp_user.user_playlist_create(
+        user=user_id,
+        name=playlist_name,
+        public=True,
+        description=description[:300] if description else "",
+    )
+    uris = []
+    for t in tracks:
+        res = sp_user.search(q=f"{t['title']} {t['artist']}", type="track", limit=1)
+        items = res.get("tracks", {}).get("items", [])
+        if items:
+            uris.append(items[0]["uri"])
+    if uris:
+        sp_user.playlist_add_items(pl["id"], uris)
+    return pl["external_urls"]["spotify"]
 
 
 # ---------------------------------------------------------------------------

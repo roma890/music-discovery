@@ -344,6 +344,26 @@
 
     .copy-btn:hover { border-color: #92640a; color: var(--accent-light); }
 
+    .save-spotify-btn {
+      background: #1DB954;
+      border: none;
+      color: #000;
+      border-radius: 7px;
+      padding: 5px 13px;
+      font-size: 0.73rem;
+      font-family: 'Inter', sans-serif;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .save-spotify-btn:hover    { opacity: 0.88; transform: translateY(-1px); }
+    .save-spotify-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .save-spotify-btn.saved    { background: #158a3e; }
+
     /* ── Track cards ── */
     #track-list { display: flex; flex-direction: column; gap: 6px; }
 
@@ -535,7 +555,10 @@
     <div class="tags" id="tags"></div>
     <div class="results-meta">
       <span class="track-count">10 tracks</span>
-      <button class="copy-btn" id="copy-btn">Copy playlist</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="copy-btn" id="copy-btn">Copy playlist</button>
+        <button class="save-spotify-btn" id="save-spotify-btn">⊕ Save to Spotify</button>
+      </div>
     </div>
     <div id="track-list"></div>
   </div>
@@ -548,16 +571,80 @@
     const errorBox   = document.getElementById('error-box');
     const statusText = document.getElementById('status-text');
     const agentSteps = document.getElementById('agent-steps');
-    const copyBtn    = document.getElementById('copy-btn');
+    const copyBtn      = document.getElementById('copy-btn');
+    const saveSpotify  = document.getElementById('save-spotify-btn');
     const bgGrid     = document.getElementById('bg-grid');
 
-    let lastTracks   = [];
+    let lastTracks    = [];
     let submittedVibe = '';
+    let lastMeta      = {};
 
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) discover();
     });
     btn.addEventListener('click', discover);
+
+    saveSpotify.addEventListener('click', () => doSaveToSpotify());
+
+    async function doSaveToSpotify() {
+      if (!lastTracks.length) return;
+      saveSpotify.textContent = 'Saving...';
+      saveSpotify.disabled = true;
+
+      const res = await fetch('/save-playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks: lastTracks, ...lastMeta }),
+      });
+
+      if (res.status === 401) {
+        // Store playlist server-side then redirect to Spotify OAuth
+        await fetch('/store-pending', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tracks: lastTracks, ...lastMeta }),
+        });
+        window.location.href = '/spotify/login';
+        return;
+      }
+
+      const data = await res.json();
+      if (data.url) {
+        saveSpotify.textContent = '✓ Open in Spotify';
+        saveSpotify.classList.add('saved');
+        saveSpotify.disabled = false;
+        saveSpotify.onclick = () => window.open(data.url, '_blank');
+      } else {
+        saveSpotify.textContent = 'Save failed';
+        saveSpotify.disabled = false;
+      }
+    }
+
+    // After Spotify OAuth redirect, auto-save the pending playlist
+    (async () => {
+      if (!window.location.search.includes('spotify_ready=true')) return;
+      history.replaceState({}, '', '/');
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#1DB954;color:#000;padding:10px 20px;border-radius:8px;font-weight:600;font-size:0.85rem;z-index:999';
+      banner.textContent = 'Saving to Spotify...';
+      document.body.appendChild(banner);
+      try {
+        const res  = await fetch('/save-playlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        if (data.url) {
+          banner.textContent = '✓ Saved! Click to open in Spotify';
+          banner.style.cursor = 'pointer';
+          banner.onclick = () => window.open(data.url, '_blank');
+          setTimeout(() => banner.remove(), 8000);
+        } else {
+          banner.textContent = 'Save failed — try again';
+          banner.style.background = '#ef4444';
+          setTimeout(() => banner.remove(), 4000);
+        }
+      } catch {
+        banner.remove();
+      }
+    })();
 
     copyBtn.addEventListener('click', () => {
       const text = lastTracks
@@ -655,6 +742,10 @@
         });
 
         lastTracks = data.tracks;
+        lastMeta   = { playlist_name: data.playlist_name, vibe_summary: data.vibe_summary };
+        document.getElementById('save-spotify-btn').textContent = '⊕ Save to Spotify';
+        document.getElementById('save-spotify-btn').disabled = false;
+        document.getElementById('save-spotify-btn').classList.remove('saved');
         renderTracks(data.tracks);
         loading.style.display = 'none';
         results.style.display = 'block';
